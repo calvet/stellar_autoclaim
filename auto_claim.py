@@ -1,12 +1,14 @@
+import json
 import time
 import locale
 import requests
+from pathlib import Path
 from datetime import datetime
 import requests.packages.urllib3.exceptions
-from stellar_sdk import Server, Keypair, MuxedAccount, TransactionBuilder, Network, TimeBounds, FeeBumpTransaction, ClaimPredicate, Claimant, Asset
+from stellar_sdk import Server, Keypair, MuxedAccount, TransactionBuilder, Network, TimeBounds, FeeBumpTransaction, \
+    ClaimPredicate, Claimant, Asset
 
 requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
-
 
 headers_gerais = {
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.0.0 Safari/537.36',
@@ -16,14 +18,16 @@ headers_gerais = {
     'connection': 'keep-alive'
 }
 
-max_trustlines = 10
+max_trustlines = 1
+assets_not_to_sell = ['AQUA', 'XLM']
 
 
 def number_format(num, places=0):
     return locale.format_string('%.*f', (places, num), True)
 
+
 def check_cotacao(org_code, org_issuer, qtd, minimo, dest_code, dest_issuer=None):
-    if (org_code == 'XLM'):
+    if org_code == 'XLM':
         org_type = 'native'
 
     elif len(org_code) <= 4:
@@ -46,8 +50,16 @@ def check_cotacao(org_code, org_issuer, qtd, minimo, dest_code, dest_issuer=None
     cotacao = get_cotacao.json()
 
     # print(cotacao)
-    
-    if len(cotacao) > 0:
+
+    if len(cotacao) < 1:
+        return 0
+    elif '_embedded' not in cotacao:
+        return 0
+    elif 'records' not in cotacao['_embedded']:
+        return 0
+    elif len(cotacao['_embedded']['records']) < 1:
+        return 0
+    else:
         # print(cotacao['_embedded']['records'][0]['destination_amount'])
         # print(number_format(0.0000100, 7), minimo)
         valor_mercado = cotacao['_embedded']['records'][0]['destination_amount']
@@ -64,24 +76,23 @@ def check_cotacao(org_code, org_issuer, qtd, minimo, dest_code, dest_issuer=None
             print(f' 🧨{valor_mercado} {dest_code}')
 
             return 0
-    else:
-      return 0
 
-def proceed_trans(account, trusts, claims, valores_claims, myPrivateKey=None):
-    # print(account, trusts, claims, valores_claims, myPrivateKey)
+
+def proceed_trans(account, trusts, claims, valores_claims, myprivatekey):
+    # print(account, trusts, claims, valores_claims, myprivatekey)
 
     server = Server('https://horizon.stellar.org')
-    print('Gerando XDR...')
+    print('Generating XDR...')
 
     base_fee = 120
 
     muxed = MuxedAccount(account_id=account, account_muxed_id=1)
     print(muxed.account_muxed)
     muxed = MuxedAccount.from_account(muxed.account_muxed)
-    
+
     account = server.load_account(account)
 
-    print(f'account_id: {muxed.account_id}\naccount_muxed_id: {muxed.account_muxed_id}')
+    print(f'Account id: {muxed.account_id}\nMuxed account id: {muxed.account_muxed_id}')
 
     native_asset = Asset('XLM')
 
@@ -91,17 +102,19 @@ def proceed_trans(account, trusts, claims, valores_claims, myPrivateKey=None):
     for key, clx in valores_claims.items():
         if clx['dest_code'] == 'XLM' or clx['dest_code'] == '' or 'dest_code' not in clx:
             asset_to_sell = Asset(clx['org_code'], clx['org_issuer'])
-            path_payments = Server.strict_send_paths(server, source_asset=asset_to_sell, source_amount=clx['org_valor'], destination=[native_asset]).call()
-            path[key] = [Asset('XLM') for asset in path_payments['_embedded']['records']]
+            path_payments = Server.strict_send_paths(server, source_asset=asset_to_sell, source_amount=clx['org_valor'],
+                                                     destination=[native_asset]).call()
+            path[key] = [Asset('XLM') for _ in path_payments['_embedded']['records']]
         else:
             asset_to_sell = Asset(clx['org_code'], clx['org_issuer'])
-            path_payments = Server.strict_send_paths(server, source_asset=asset_to_sell, source_amount=clx['org_valor'], destination=[native_asset]).call()
-            path[key] = [asset_to_buy for asset in path_payments['_embedded']['records']]
+            path_payments = Server.strict_send_paths(server, source_asset=asset_to_sell, source_amount=clx['org_valor'],
+                                                     destination=[native_asset]).call()
+            path[key] = [asset_to_buy for _ in path_payments['_embedded']['records']]
 
     transaction = TransactionBuilder(
-       source_account=account,
-       network_passphrase=Network.PUBLIC_NETWORK_PASSPHRASE,
-       base_fee=base_fee
+        source_account=account,
+        network_passphrase=Network.PUBLIC_NETWORK_PASSPHRASE,
+        base_fee=base_fee
     )
 
     transaction.add_time_bounds(int(time.time()) - 60, int(time.time()) + 300)
@@ -110,13 +123,12 @@ def proceed_trans(account, trusts, claims, valores_claims, myPrivateKey=None):
         asset = tline.split(':')
 
         assets[asset[0]] = Asset(asset[0], asset[1])
-        
+
         transaction.append_change_trust_op(asset=assets[asset[0]])
 
     for claim in claims:
         transaction.append_claim_claimable_balance_op(balance_id=claim, source=muxed)
 
-    d = 0
     for key, clx in valores_claims.items():
         if clx['dest_code'] == 'XLM':
             clx['dest_code'] = 'XLM'
@@ -128,49 +140,91 @@ def proceed_trans(account, trusts, claims, valores_claims, myPrivateKey=None):
         assets[clx['org_code']] = Asset(clx['org_code'], clx['org_issuer'])
         assets[clx['dest_code']] = Asset(clx['dest_code'], clx['dest_issuer'])
 
-        transaction.append_path_payment_strict_send_op(
-            destination=muxed, # account,
-            send_asset=assets[clx['org_code']],
-            send_amount=clx['org_valor'],
-            dest_asset=assets[clx['dest_code']],
-            dest_min=clx['dest_min'],
-            path=path[key]
-        )
-        
-        transaction.append_change_trust_op(
-            asset=assets[clx['org_code']],
-            limit='0'
-        )
+        # TODO: validar se asset nao esta na lista para ser ignorada
+        if clx['org_code'] not in assets_not_to_sell:
+            transaction.append_path_payment_strict_send_op(
+                destination=muxed,  # account,
+                send_asset=assets[clx['org_code']],
+                send_amount=clx['org_valor'],
+                dest_asset=assets[clx['dest_code']],
+                dest_min=clx['dest_min'],
+                path=path[key]
+            )
 
+            transaction.append_change_trust_op(
+                asset=assets[clx['org_code']],
+                limit='0'
+            )
+        else:
+            print(f'ASSET {clx["org_code"]} (worth {clx["org_valor"]} XLM) NOT SOLD!')
+
+    # transaction.set_timeout(45)
     tx = transaction.build()
 
-    if myPrivateKey[0:1] == 'S' and len(myPrivateKey) == 56:
-        stellar_keypair = Keypair.from_secret(myPrivateKey)
-        account_priv_key = stellar_keypair.secret
-        tx.sign(account_priv_key)
-        response = server.submit_transaction(tx)
-    
-        print('Funcionou?', response['successful'], response['id'])
-    else:
-        print(tx.to_xdr())
+    print('')
+
+    try:
+        if myprivatekey[0:1] == 'S' and len(myprivatekey) == 56:
+            stellar_keypair = Keypair.from_secret(myprivatekey)
+            account_priv_key = stellar_keypair.secret
+            tx.sign(account_priv_key)
+
+            try:
+                response = server.submit_transaction(tx)
+
+                print('The transaction was submitted successfully!', response['successful'], response['id'])
+            except Exception as e:
+                print('The transaction failed!')
+
+                print(e)
+
+                if e['title'] == 'Timeout':
+                    print('Error: transaction timeout. Try again!')
+
+                if 'extras' in e:
+                    dct = e.extras
+                    if dct['extras']['result_code']['transaction'] == 'tx_failed':
+                        for e_code in dct['extras']['result_code']['transaction']['operations']:
+                            if e_code == 'op_low_reserve':
+                                print('Error: not enough funds to create a new Offer')
+                            elif e_code == 'op_no_trust':
+                                print('Error: destination missing a trust line for asset')
+                            elif e_code == 'op_src_no_trust':
+                                print('Error: no trust line on source account')
+                            elif e_code == 'op_invalid_limit':
+                                print('Error: cannot drop limit below balance, cannot create with a limit of 0')
+                            else:
+                                print(e_code)
+                    else:
+                        print(e.extras['result_codes'])
+        else:
+            print(tx.to_xdr())
+    except Exception as e:
+        print(e)
 
 
-def verificar_conta(public_address, private_address):
-    if public_address[0:1] != 'G' or len(public_address) != 56:
-        print('Não é um endereço de carteira.')
+def verificar_conta(ppublic_address, pprivate_address):
+    trustlines = {}
+    ids_claims = []
+    valor_claims = {}
+
+    if ppublic_address[0:1] != 'G' or len(ppublic_address) != 56:
+        print('Your public address is not valid!')
 
         exit()
 
-    if private_address[0:1] != 'S' or len(private_address) != 56:
-        print('Não é um endereço de carteira privada.')
+    if pprivate_address[0:1] != 'S' or len(pprivate_address) != 56:
+        print('Your private key is not valid!')
 
         exit()
-        
-    wlt = '[' + public_address[-10:] + ']'
+
+    wlt = '[' + ppublic_address[-10:] + ']'
     arrecadacao = 0
-    
+
+    print('Ignoring SELL operation for the following assets: {}\n'.format(', '.join(assets_not_to_sell)))
+
     get_claimable = requests.get(
-        url=f'https://horizon.stellar.org/claimable_balances/?limit=200&claimant={public_address}',
+        url=f'https://horizon.stellar.org/claimable_balances/?limit=200&claimant={ppublic_address}',
         headers=headers_gerais,
         timeout=60,
         verify=False
@@ -180,35 +234,48 @@ def verificar_conta(public_address, private_address):
 
     claimable_records = claimable_data['_embedded']['records']
 
+    print(f'\n{wlt}')
+
     if len(claimable_records) < 1:
-        print(f'\n{wlt} 0️⃣')
-    else:
-        trustlines = {}
-        ids_claims = []
-        valor_claims = {}
+        print(f'\n No claimable balances found!\n')
 
-        get_account = requests.get(
-            url=f'https://horizon.stellar.org/accounts/{public_address}',
-            headers=headers_gerais,
-            timeout=60,
-            verify=False
-        )
+    get_account = requests.get(
+        url=f'https://horizon.stellar.org/accounts/{ppublic_address}',
+        headers=headers_gerais,
+        timeout=60,
+        verify=False
+    )
 
-        account_data = get_account.json()
+    account_data = get_account.json()
 
-        account_balances = account_data['balances']
+    if 'balances' not in account_data:
+        print(f'\n No balances found! (account may not exist?)\n')
 
-        print(f'\n{wlt}')
+        return
 
+    account_balances = account_data['balances']
+
+    for ac_balance in account_balances:
+        if 'asset_code' in ac_balance:
+            asset = ac_balance['asset_code']
+        else:
+            asset = 'XLM'
+
+        print(f'🐧 Balance {asset}: {ac_balance["balance"]}')
+
+    print('')
+
+    if len(claimable_records) > 0:
         for claimable in claimable_records:
             asset = claimable['asset'].split(':')
             print(' (' + asset[0] + ') ', end='')
-            
+
             possui_trustline = False
 
             for balance in account_balances:
-                if 'asset_code' in balance and balance['asset_code'] == asset[0] and 'asset_issuer' in balance and balance['asset_issuer'] == asset[1]:
-                    print('☑', end='')
+                if 'asset_code' in balance and balance['asset_code'] == asset[0] and 'asset_issuer' in balance and \
+                        balance['asset_issuer'] == asset[1]:
+                    print(f'☑ ', end='')
                     # print('Já tem trustline: ' + claimable["id"] + '\n');
                     possui_trustline = True
 
@@ -220,18 +287,18 @@ def verificar_conta(public_address, private_address):
             for claimant in claimants:
                 if claimant['destination'] == public_address:
                     if 'unconditional' in claimant['predicate'] and claimant['predicate']['unconditional']:
-                        print('☑ (incondicional)', end='')
+                        print('☑ (uncondicional)', end='')
                         # print('❎', end='')
                         pode_claim = True
                     elif 'abs_before' in claimant['predicate']:
                         ate_quando = datetime.fromisoformat(claimant['predicate']['abs_before'].replace('Z', ''))
-                        
+
                         if ate_quando < datetime.now():
                             pode_claim = False
-                            print('❎ (expirou)', end='')
+                            print('❎ (expired)', end='')
                         else:
                             pode_claim = True
-                            print('☑ (valido)', end='')
+                            print('☑ (valid)', end='')
 
                     if pode_claim:
                         get_asset = requests.get(
@@ -248,17 +315,17 @@ def verificar_conta(public_address, private_address):
                         if not asset_records['flags']['auth_required']:
                             pode_claim = True
                         else:
-                            print('✋ (REQUER AUTORIZACAO!)')
+                            print('✋ (NEEDS AUTHORIZATION!)')
                             pode_claim = False
             if not pode_claim:
-                print(' (nao pode claim)')
+                print(' (cannot claim [yet?])')
 
             if not possui_trustline and pode_claim:
                 if len(trustlines) < max_trustlines:
                     valor_mercado = check_cotacao(asset[0], asset[1], claimable['amount'], 0.0001, 'XLM', None)
 
                     if float(valor_mercado) > 0.0001:
-                        print('☑ (valido)')
+                        print('☑ (valid)')
                         arrecadacao += float(valor_mercado)
 
                         # print('🐧' + claimable['id'])
@@ -279,21 +346,24 @@ def verificar_conta(public_address, private_address):
                             'valor_mercado': valor_mercado
                         }
                 else:
-                    print('🧪 (max trustlines')
-                    break # TODO: ???????????
+                    print('🧪 (max trustlines)')
+                    break  # TODO: ???????????
 
     if len(ids_claims) > 0:
-        print(f'\n\033[1;33m{wlt} Arrecadacao: {number_format(arrecadacao, 7)}\033[0m\n')
-        
-        proceed_trans(public_address, trustlines, ids_claims, valor_claims, private_address)
+        print(f'\n[{wlt} Collected: {number_format(arrecadacao, 7)} XLM\n')
+
+        proceed_trans(ppublic_address, trustlines, ids_claims, valor_claims, pprivate_address)
     else:
-        print(f'\n\033[1;33m{wlt} 0 Arrecadacao\033[0m\n')
+        print(f'\n[{wlt} Collected: 0 XLM\n')
 
-
-contas = {
-    'public_address': 'private_address'
-}
 
 if __name__ == '__main__':
-    for public_address, private_address in contas.items():
-        verificar_conta(public_address, private_address)
+    contas_data = json.load(open(str(Path(__file__).parent.absolute()) + '/accounts_data.json'))
+
+    while True:
+        for public_address, private_address in contas_data.items():
+            if public_address == '_comment':
+                continue
+
+            # while True:
+            verificar_conta(public_address, private_address)
