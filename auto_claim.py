@@ -5,8 +5,7 @@ import requests
 from pathlib import Path
 from datetime import datetime
 import requests.packages.urllib3.exceptions
-from stellar_sdk import Server, Keypair, MuxedAccount, TransactionBuilder, Network, TimeBounds, FeeBumpTransaction, \
-    ClaimPredicate, Claimant, Asset
+from stellar_sdk import Server, Keypair, MuxedAccount, TransactionBuilder, Network, Asset
 
 requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
 
@@ -49,8 +48,6 @@ def check_cotacao(org_code, org_issuer, qtd, minimo, dest_code, dest_issuer=None
 
     cotacao = get_cotacao.json()
 
-    # print(cotacao)
-
     if len(cotacao) < 1:
         return 0
     elif '_embedded' not in cotacao:
@@ -60,39 +57,34 @@ def check_cotacao(org_code, org_issuer, qtd, minimo, dest_code, dest_issuer=None
     elif len(cotacao['_embedded']['records']) < 1:
         return 0
     else:
-        # print(cotacao['_embedded']['records'][0]['destination_amount'])
-        # print(number_format(0.0000100, 7), minimo)
         valor_mercado = cotacao['_embedded']['records'][0]['destination_amount']
 
         if float(valor_mercado) > minimo:
             valor_mercado = number_format(float(valor_mercado), 7)
 
-            print(f' 💰{valor_mercado} {dest_code}', end='')
-
             return valor_mercado
         else:
             valor_mercado = number_format(float(valor_mercado), 7)
 
-            print(f' 🧨{valor_mercado} {dest_code}')
-
-            return 0
+            return valor_mercado
 
 
 def proceed_trans(account, trusts, claims, valores_claims, myprivatekey):
-    # print(account, trusts, claims, valores_claims, myprivatekey)
-
     server = Server('https://horizon.stellar.org')
-    print('Generating XDR...')
+
+    print('GENERATING XDR...')
 
     base_fee = 120
 
     muxed = MuxedAccount(account_id=account, account_muxed_id=1)
-    print(muxed.account_muxed)
+
+    # print(muxed.account_muxed)
+
     muxed = MuxedAccount.from_account(muxed.account_muxed)
 
     account = server.load_account(account)
 
-    print(f'Account id: {muxed.account_id}\nMuxed account id: {muxed.account_muxed_id}')
+    print(f'ACCOUNT ID: {muxed.account_id}\nMUXED ACCOUNT ID: {muxed.account_muxed_id}')
 
     native_asset = Asset('XLM')
 
@@ -109,7 +101,7 @@ def proceed_trans(account, trusts, claims, valores_claims, myprivatekey):
             asset_to_sell = Asset(clx['org_code'], clx['org_issuer'])
             path_payments = Server.strict_send_paths(server, source_asset=asset_to_sell, source_amount=clx['org_valor'],
                                                      destination=[native_asset]).call()
-            path[key] = [asset_to_buy for _ in path_payments['_embedded']['records']]
+            path[key] = [asset_to_sell for _ in path_payments['_embedded']['records']]
 
     transaction = TransactionBuilder(
         source_account=account,
@@ -158,7 +150,6 @@ def proceed_trans(account, trusts, claims, valores_claims, myprivatekey):
         else:
             print(f'ASSET {clx["org_code"]} (worth {clx["org_valor"]} XLM) NOT SOLD!')
 
-    # transaction.set_timeout(45)
     tx = transaction.build()
 
     print('')
@@ -172,9 +163,9 @@ def proceed_trans(account, trusts, claims, valores_claims, myprivatekey):
             try:
                 response = server.submit_transaction(tx)
 
-                print('The transaction was submitted successfully!', response['successful'], response['id'])
+                print('TRANSACTION WAS SUBMITED SUCCESSFULLY!', response['successful'], response['id'])
             except Exception as e:
-                print('The transaction failed!')
+                print('TRANSACTION FAILED!')
 
                 print(e)
 
@@ -183,6 +174,7 @@ def proceed_trans(account, trusts, claims, valores_claims, myprivatekey):
 
                 if 'extras' in e:
                     dct = e.extras
+
                     if dct['extras']['result_code']['transaction'] == 'tx_failed':
                         for e_code in dct['extras']['result_code']['transaction']['operations']:
                             if e_code == 'op_low_reserve':
@@ -209,19 +201,26 @@ def verificar_conta(ppublic_address, pprivate_address):
     valor_claims = {}
 
     if ppublic_address[0:1] != 'G' or len(ppublic_address) != 56:
-        print('Your public address is not valid!')
+        print('ERROR! YOUR PUBLIC ADDRESS IS NOT VALID!')
 
         exit()
 
     if pprivate_address[0:1] != 'S' or len(pprivate_address) != 56:
-        print('Your private key is not valid!')
+        print('ERROR! YOUR PRIVATE ADDRESS IS NOT VALID')
 
         exit()
 
     wlt = '[' + ppublic_address[-10:] + ']'
+
     arrecadacao = 0
 
-    print('Ignoring SELL operation for the following assets: {}\n'.format(', '.join(assets_not_to_sell)))
+    print(wlt)
+
+    print('-' * 90)
+
+    print('IGNORING SELL OPERATION FOR THE FOLLOWING ASSETS: {}'.format(', '.join(assets_not_to_sell)))
+
+    print('-' * 90)
 
     get_claimable = requests.get(
         url=f'https://horizon.stellar.org/claimable_balances/?limit=200&claimant={ppublic_address}',
@@ -234,10 +233,8 @@ def verificar_conta(ppublic_address, pprivate_address):
 
     claimable_records = claimable_data['_embedded']['records']
 
-    print(f'\n{wlt}')
-
     if len(claimable_records) < 1:
-        print(f'\n No claimable balances found!\n')
+        print(f'NO CLAIMABLE BALANCES FOUND!\n')
 
     get_account = requests.get(
         url=f'https://horizon.stellar.org/accounts/{ppublic_address}',
@@ -249,7 +246,7 @@ def verificar_conta(ppublic_address, pprivate_address):
     account_data = get_account.json()
 
     if 'balances' not in account_data:
-        print(f'\n No balances found! (account may not exist?)\n')
+        print(f'NO BALANCES FOUND! (ACCOUNT MAY NOT EXIST?)\n')
 
         return
 
@@ -261,22 +258,21 @@ def verificar_conta(ppublic_address, pprivate_address):
         else:
             asset = 'XLM'
 
-        print(f'🐧 Balance {asset}: {ac_balance["balance"]}')
+        print(f'BALANCE {asset}: {ac_balance["balance"]}')
 
     print('')
 
     if len(claimable_records) > 0:
         for claimable in claimable_records:
             asset = claimable['asset'].split(':')
-            print(' (' + asset[0] + ') ', end='')
+
+            print('(' + asset[0] + ') ->', end=' ')
 
             possui_trustline = False
 
             for balance in account_balances:
                 if 'asset_code' in balance and balance['asset_code'] == asset[0] and 'asset_issuer' in balance and \
                         balance['asset_issuer'] == asset[1]:
-                    print(f'☑ ', end='')
-                    # print('Já tem trustline: ' + claimable["id"] + '\n');
                     possui_trustline = True
 
                     break
@@ -287,18 +283,20 @@ def verificar_conta(ppublic_address, pprivate_address):
             for claimant in claimants:
                 if claimant['destination'] == public_address:
                     if 'unconditional' in claimant['predicate'] and claimant['predicate']['unconditional']:
-                        print('☑ (uncondicional)', end='')
-                        # print('❎', end='')
+                        print('(UNCONDITIONAL)', end=' ')
+
                         pode_claim = True
                     elif 'abs_before' in claimant['predicate']:
                         ate_quando = datetime.fromisoformat(claimant['predicate']['abs_before'].replace('Z', ''))
 
                         if ate_quando < datetime.now():
+                            print('(EXPIRED)', end=' ')
+
                             pode_claim = False
-                            print('❎ (expired)', end='')
                         else:
+                            print('(VALID)', end=' ')
+
                             pode_claim = True
-                            print('☑ (valid)', end='')
 
                     if pode_claim:
                         get_asset = requests.get(
@@ -315,20 +313,20 @@ def verificar_conta(ppublic_address, pprivate_address):
                         if not asset_records['flags']['auth_required']:
                             pode_claim = True
                         else:
-                            print('✋ (NEEDS AUTHORIZATION!)')
+                            print('(NEEDS AUTHORIZATION)', end=' ')
+
                             pode_claim = False
             if not pode_claim:
-                print(' (cannot claim [yet?])')
+                print('(CANNOT CLAIN [YET?])', end=' ')
 
             if not possui_trustline and pode_claim:
                 if len(trustlines) < max_trustlines:
                     valor_mercado = check_cotacao(asset[0], asset[1], claimable['amount'], 0.0001, 'XLM', None)
 
                     if float(valor_mercado) > 0.0001:
-                        print('☑ (valid)')
-                        arrecadacao += float(valor_mercado)
+                        print(f'(VALID) {valor_mercado} XLM', end=' ')
 
-                        # print('🐧' + claimable['id'])
+                        arrecadacao += float(valor_mercado)
 
                         id_asset = claimable['asset'].replace(':', '_')
 
@@ -345,16 +343,30 @@ def verificar_conta(ppublic_address, pprivate_address):
                             'dest_code': 'XLM',
                             'valor_mercado': valor_mercado
                         }
+                    else:
+                        print(f'(INVALID) {valor_mercado} XLM', end=' ')
                 else:
-                    print('🧪 (max trustlines)')
-                    break  # TODO: ???????????
+                    print('')
+
+                    print('WILL NOT CONTINUE. MAX TRUSTLINES!')
+
+                    break
+
+            print('')
+
+    print('')
 
     if len(ids_claims) > 0:
-        print(f'\n[{wlt} Collected: {number_format(arrecadacao, 7)} XLM\n')
+        value_arracadacao = number_format(arrecadacao, 7)
 
-        proceed_trans(ppublic_address, trustlines, ids_claims, valor_claims, pprivate_address)
+        print(f'{wlt} COLLECTING: {value_arracadacao} XLM..')
+
+        try:
+            proceed_trans(ppublic_address, trustlines, ids_claims, valor_claims, pprivate_address)
+        except:
+            print(f'{wlt} FAILED TO COLLECT: {value_arracadacao} XLM!')
     else:
-        print(f'\n[{wlt} Collected: 0 XLM\n')
+        print(f'{wlt} NOTHING TO COLLECT!')
 
 
 if __name__ == '__main__':
@@ -365,5 +377,6 @@ if __name__ == '__main__':
             if public_address == '_comment':
                 continue
 
-            # while True:
+            print('-' * 90)
+
             verificar_conta(public_address, private_address)
