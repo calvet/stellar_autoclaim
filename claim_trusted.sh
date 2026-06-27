@@ -1,7 +1,8 @@
 #!/bin/bash
 while true
 do
-   php auto_claim.php
+   date
+   python3 auto_claim.py
    date
    sleep 1800
 done

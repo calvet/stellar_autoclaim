@@ -5,6 +5,7 @@ import requests
 from pathlib import Path
 from datetime import datetime
 import requests.packages.urllib3.exceptions
+from stellar_sdk.exceptions import BadResponseError
 from stellar_sdk import Server, Keypair, MuxedAccount, TransactionBuilder, Network, Asset
 
 requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
@@ -164,6 +165,10 @@ def proceed_trans(account, trusts, claims, valores_claims, myprivatekey):
                 response = server.submit_transaction(tx)
 
                 print('TRANSACTION WAS SUBMITED SUCCESSFULLY!', response['successful'], response['id'])
+            except BadResponseError as b:
+                print('TRANSACTION FAILED!')
+
+                print(b)
             except Exception as e:
                 print('TRANSACTION FAILED!')
 
@@ -231,7 +236,12 @@ def verificar_conta(ppublic_address, pprivate_address):
 
     claimable_data = get_claimable.json()
 
-    claimable_records = claimable_data['_embedded']['records']
+    try:
+        claimable_records = claimable_data['_embedded']['records']
+    except:
+        claimable_records = []
+        print(get_claimable.text)
+        exit()
 
     if len(claimable_records) < 1:
         print(f'NO CLAIMABLE BALANCES FOUND!\n')
